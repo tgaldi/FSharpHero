@@ -11,30 +11,50 @@ module SDL_Handmade =
     type SDLWindow = nativeint
     type SDLRenderer = nativeint
     type SDLTexture = nativeint
+    type SDLController = nativeint
+    type SDLEvent = SDL.SDL_Event
 
     type SDL_WindowSize = { Width : int; Height : int }
-    type SDL_BackBuffer =
+
+    type SDL_Offscreen_Buffer =
         {
             mutable Texture : SDLTexture;
             mutable Size : SDL_WindowSize;
-            mutable Pixels : int32[]
+            mutable Pixels : byte[]
             mutable BytesPerPixel : int
         }
+
+    let MAX_CONTROLLERS = 4
+    let ControllerHandles = Array.zeroCreate<SDLController> MAX_CONTROLLERS
 
     let GlobalBackBuffer =
         {
             Texture = Unchecked.defaultof<SDLTexture>
             Size = { Width = 0; Height = 0 }
-            Pixels = Array.zeroCreate<int32> 0
-            BytesPerPixel = 0
+            Pixels = Array.zeroCreate<byte> 0
+            BytesPerPixel = 4
         }
+
 
     let SDL_GetWindowSize (window:SDLWindow) =
         match SDL.SDL_GetWindowSize( window ) with
         | ( width, height ) -> { Width = width; Height = height }
 
-    let RenderGradient (blueOffset:int) (greenOffset:int) =
+
+    let mutable BlueOffset = (byte)0
+    let mutable GreenOffset = (byte)0
+    let RenderGradient (blueOffset:byte) (greenOffset:byte) =
         let pitch = GlobalBackBuffer.Size.Width * GlobalBackBuffer.BytesPerPixel
+
+        for y in [0..GlobalBackBuffer.Size.Height-1] do
+            for x in [0..GlobalBackBuffer.Size.Width-1] do
+                let pixel = y * pitch + x * GlobalBackBuffer.BytesPerPixel
+                let Blue = (byte)x + BlueOffset
+                let Green = (byte)y + GreenOffset
+                GlobalBackBuffer.Pixels.[pixel] <- (byte)1
+                GlobalBackBuffer.Pixels.[pixel+1] <- Blue
+                GlobalBackBuffer.Pixels.[pixel+2] <- Green
+                GlobalBackBuffer.Pixels.[pixel+3] <- (byte)1
 
 
     let SDL_UpdateWindow (renderer:SDLRenderer) =
@@ -55,17 +75,19 @@ module SDL_Handmade =
 
         pixelHandle.Free()
 
+
     let SDL_ResizeTexture (window:SDLWindow) =
         if GlobalBackBuffer.Texture <> IntPtr.Zero then
             SDL.SDL_DestroyTexture GlobalBackBuffer.Texture |> ignore
 
         let renderer = SDL.SDL_GetRenderer window
         GlobalBackBuffer.Size <- SDL_GetWindowSize window
-        GlobalBackBuffer.Pixels <- Array.create ( GlobalBackBuffer.Size.Width * GlobalBackBuffer.Size.Height ) 0
+        GlobalBackBuffer.Pixels <- Array.zeroCreate ( (GlobalBackBuffer.Size.Width*GlobalBackBuffer.Size.Height) * GlobalBackBuffer.BytesPerPixel )
         GlobalBackBuffer.Texture <- SDL.SDL_CreateTexture( renderer,
                                                    SDL.SDL_PIXELFORMAT_ABGR8888,
                                                    (int)SDL.SDL_TextureAccess.SDL_TEXTUREACCESS_STREAMING,
                                                    GlobalBackBuffer.Size.Width, GlobalBackBuffer.Size.Height )
+
 
     let SDL_WindowEvent (event:SDL.SDL_Event) =
         let window = SDL.SDL_GetWindowFromID event.window.windowID
@@ -74,6 +96,7 @@ module SDL_Handmade =
         | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_SIZE_CHANGED -> SDL_ResizeTexture window
         | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_EXPOSED -> SDL_UpdateWindow  window
         | _ -> ()
+
 
     let SDL_HandleEvent (event:SDL.SDL_Event) =
         match event.``type`` with
@@ -87,7 +110,7 @@ module SDL_Handmade =
 
         SDL.SDL_SetHint( SDL.SDL_HINT_WINDOWS_DISABLE_THREAD_NAMING, "1" ) |> ignore
 
-        if SDL.SDL_Init SDL.SDL_INIT_VIDEO <> 0 then
+        if SDL.SDL_Init ( SDL.SDL_INIT_VIDEO ||| SDL.SDL_INIT_GAMECONTROLLER ) <> 0 then
             printfn "SDL Init Error!"
         else
             printfn "SDL Init Successful"
@@ -102,6 +125,14 @@ module SDL_Handmade =
 
             SDL_ResizeTexture window
 
+            let MaxJoysticks = SDL.SDL_NumJoysticks()
+            let mutable ControllerIndex = 0
+//            [0..MaxJoysticks-1]
+//                |> Seq.takeWhile ( fun i -> (SDL.SDL_IsGameController i) = SDL.SDL_bool.SDL_TRUE )
+//                |> Seq.map ( fun n -> SDL.SDL_GameControllerOpen n )
+//                |> let store = ControllerHandles[ControllerIndex]
+
+
             let mutable sdlEvent = Unchecked.defaultof<SDL.SDL_Event>
             let mutable counter = 0
 
@@ -112,6 +143,9 @@ module SDL_Handmade =
                     counter <- counter + 1
                     printfn "%d" counter
                     SDL.SDL_PollEvent( &sdlEvent ) |> ignore
+                    BlueOffset <- BlueOffset + (byte)1
+                    GreenOffset <- GreenOffset + (byte)2
+                    RenderGradient BlueOffset GreenOffset
                     SDL_UpdateWindow renderer
                     GameLoop ( SDL_HandleEvent sdlEvent )
 
