@@ -16,6 +16,13 @@ module SDL_Handmade =
 
     type SDL_WindowSize = { Width : int; Height : int }
 
+    type Ptr = { Handle : GCHandle; Address : nativeint }
+    let GetPtr value =
+        let handle = GCHandle.Alloc( value, GCHandleType.Pinned )
+        let address = handle.AddrOfPinnedObject()
+        { Handle = handle; Address = address }
+
+
     type SDL_Offscreen_Buffer =
         {
             mutable Texture : SDLTexture;
@@ -23,9 +30,6 @@ module SDL_Handmade =
             mutable Pixels : byte[]
             BytesPerPixel : int
         }
-
-    let MAX_CONTROLLERS = 4
-    let mutable ControllerHandles = Array.zeroCreate<SDLController> MAX_CONTROLLERS
 
     let GlobalBackBuffer =
         {
@@ -35,10 +39,33 @@ module SDL_Handmade =
             BytesPerPixel = 4
         }
 
-
     let SDL_GetWindowSize (window:SDLWindow) =
         match SDL.SDL_GetWindowSize( window ) with
         | ( width, height ) -> { Width = width; Height = height }
+
+
+    let MAX_CONTROLLERS = 4
+    let mutable ControllerHandles = Array.zeroCreate<SDLController> 0
+
+    let OpenControllers count =
+        let rec loop (opened:list<SDLController>) toOpen =
+            match toOpen with
+            | [] -> List.rev opened
+            | head :: tail ->
+                match ( (SDL.SDL_IsGameController head), head < MAX_CONTROLLERS ) with
+                | SDL.SDL_bool.SDL_TRUE, true -> loop ( (SDL.SDL_GameControllerOpen head) :: opened ) tail
+                | _ -> loop opened tail
+
+        loop [] count
+
+    let CloseControllers (controllers:list<SDLController>) =
+        let rec loop (toClose:list<SDLController>) =
+            match toClose with
+            | [] -> ()
+            | head :: tail ->
+                SDL.SDL_GameControllerClose head; loop tail
+
+        loop controllers
 
 
     let mutable BlueOffset = (byte)0
@@ -100,7 +127,7 @@ module SDL_Handmade =
 
     let SDL_HandleEvent (event:SDL.SDL_Event) =
         match event.``type`` with
-        | SDL.SDL_EventType.SDL_QUIT -> SDL.SDL_Quit()
+        | SDL.SDL_EventType.SDL_QUIT -> CloseControllers (Array.toList ControllerHandles); SDL.SDL_Quit()
         | SDL.SDL_EventType.SDL_WINDOWEVENT -> SDL_WindowEvent event
         | _ -> ()
 
@@ -125,18 +152,7 @@ module SDL_Handmade =
 
             SDL_ResizeTexture window
 
-            let MaxJoysticks = SDL.SDL_NumJoysticks()
-            let rec OpenControllers toOpen opened =
-                match toOpen with
-                | [] -> opened
-                | head :: tail ->
-                    if (SDL.SDL_IsGameController head) = SDL.SDL_bool.SDL_TRUE then
-                        ControllerHandles.[head] <- SDL.SDL_GameControllerOpen head
-
-                    OpenControllers tail ControllerHandles
-
-            OpenControllers [0..MaxJoysticks-1] ControllerHandles |> ignore
-
+            ControllerHandles <- List.toArray( OpenControllers [0..SDL.SDL_NumJoysticks()-1] )
 
             let mutable sdlEvent = Unchecked.defaultof<SDL.SDL_Event>
             let mutable counter = 0
