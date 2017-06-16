@@ -21,11 +21,11 @@ module SDL_Handmade =
             mutable Texture : SDLTexture;
             mutable Size : SDL_WindowSize;
             mutable Pixels : byte[]
-            mutable BytesPerPixel : int
+            BytesPerPixel : int
         }
 
     let MAX_CONTROLLERS = 4
-    let ControllerHandles = Array.zeroCreate<SDLController> MAX_CONTROLLERS
+    let mutable ControllerHandles = Array.zeroCreate<SDLController> MAX_CONTROLLERS
 
     let GlobalBackBuffer =
         {
@@ -126,11 +126,16 @@ module SDL_Handmade =
             SDL_ResizeTexture window
 
             let MaxJoysticks = SDL.SDL_NumJoysticks()
-            let mutable ControllerIndex = 0
-//            [0..MaxJoysticks-1]
-//                |> Seq.takeWhile ( fun i -> (SDL.SDL_IsGameController i) = SDL.SDL_bool.SDL_TRUE )
-//                |> Seq.map ( fun n -> SDL.SDL_GameControllerOpen n )
-//                |> let store = ControllerHandles[ControllerIndex]
+            let rec OpenControllers toOpen opened =
+                match toOpen with
+                | [] -> opened
+                | head :: tail ->
+                    if (SDL.SDL_IsGameController head) = SDL.SDL_bool.SDL_TRUE then
+                        ControllerHandles.[head] <- SDL.SDL_GameControllerOpen head
+
+                    OpenControllers tail ControllerHandles
+
+            OpenControllers [0..MaxJoysticks-1] ControllerHandles |> ignore
 
 
             let mutable sdlEvent = Unchecked.defaultof<SDL.SDL_Event>
