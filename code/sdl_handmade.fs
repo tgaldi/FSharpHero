@@ -40,6 +40,9 @@ module SDL_Handmade =
         }
 
     let SDL_GetWindowSize (window:SDLWindow) =
+        // #NOTE GetWindowSize takes a window and two byRef/"out" int results.
+        // F# automatically turns out parameters into tuples instead of the user providing a data container.
+        // The matching on ( width, height ) is matching the returned tuple.
         match SDL.SDL_GetWindowSize( window ) with
         | ( width, height ) -> { Width = width; Height = height }
 
@@ -47,23 +50,29 @@ module SDL_Handmade =
     let MAX_CONTROLLERS = 4
     let mutable ControllerHandles = Array.zeroCreate<SDLController> 0
 
-    let OpenControllers count =
+    let SDL_OpenControllers count =
+        // #NOTE This is the cons (construct) pattern used to deconstruct a list.
+        // The first element of the list, the head, is popped off and the tail contains the remaining list.
         let rec loop (opened:list<SDLController>) toOpen =
             match toOpen with
             | [] -> List.rev opened
             | head :: tail ->
+            // #NOTE Here a tuple is created to match against, with the second element being a conditional
+            // A "when" guard could also be used in the matches instead.
+            // If the head is opened a new "opened" list is created which contains the head and the old list.
                 match ( (SDL.SDL_IsGameController head), head < MAX_CONTROLLERS ) with
                 | SDL.SDL_bool.SDL_TRUE, true -> loop ( (SDL.SDL_GameControllerOpen head) :: opened ) tail
                 | _ -> loop opened tail
 
         loop [] count
 
-    let CloseControllers (controllers:list<SDLController>) =
+    let SDL_CloseControllers (controllers:list<SDLController>) =
         let rec loop (toClose:list<SDLController>) =
             match toClose with
             | [] -> ()
             | head :: tail ->
-                SDL.SDL_GameControllerClose head; loop tail
+                SDL.SDL_GameControllerClose head
+                loop tail
 
         loop controllers
 
@@ -71,8 +80,9 @@ module SDL_Handmade =
     let mutable BlueOffset = (byte)0
     let mutable GreenOffset = (byte)0
     let RenderGradient (blueOffset:byte) (greenOffset:byte) =
-        let pitch = GlobalBackBuffer.Size.Width * GlobalBackBuffer.BytesPerPixel
+        let pitch = GlobalBackBuffer.Size.Width * GlobalBackBuffer.BytesPerPixel // length of a row of pixels
 
+        // #TODO find a pattern to rewrite this with
         for y in [0..GlobalBackBuffer.Size.Height-1] do
             for x in [0..GlobalBackBuffer.Size.Width-1] do
                 let pixel = y * pitch + x * GlobalBackBuffer.BytesPerPixel
@@ -116,7 +126,7 @@ module SDL_Handmade =
                                                    GlobalBackBuffer.Size.Width, GlobalBackBuffer.Size.Height )
 
 
-    let SDL_WindowEvent (event:SDL.SDL_Event) =
+    let SDL_HandleWindowEvent (event:SDL.SDL_Event) =
         let window = SDL.SDL_GetWindowFromID event.window.windowID
         match event.window.windowEvent with
         | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_RESIZED -> SDL_ResizeTexture window
@@ -126,10 +136,86 @@ module SDL_Handmade =
 
 
     let SDL_HandleEvent (event:SDL.SDL_Event) =
+        let mutable quitEvent = false
         match event.``type`` with
-        | SDL.SDL_EventType.SDL_QUIT -> CloseControllers (Array.toList ControllerHandles); SDL.SDL_Quit()
-        | SDL.SDL_EventType.SDL_WINDOWEVENT -> SDL_WindowEvent event
+        | SDL.SDL_EventType.SDL_QUIT ->
+            quitEvent <- true
+
+        | keyevent when keyevent = SDL.SDL_EventType.SDL_KEYDOWN || keyevent = SDL.SDL_EventType.SDL_KEYUP ->
+            let IsDown = event.key.state = SDL.SDL_PRESSED
+            let WasDown = match event.key with
+                          | key when key.state = SDL.SDL_RELEASED -> true
+                          | key when key.repeat <> (byte)0 -> true
+                          | _ -> false
+
+            if event.key.repeat = (byte)0 then
+                match event.key.keysym.sym with
+                | SDL.SDL_Keycode.SDLK_w ->
+                    if IsDown then printfn "IsDown"
+                    elif WasDown then printfn "WasDown"
+                | SDL.SDL_Keycode.SDLK_s -> ()
+                | SDL.SDL_Keycode.SDLK_d -> ()
+                | SDL.SDL_Keycode.SDLK_q -> ()
+                | SDL.SDL_Keycode.SDLK_e -> ()
+                | SDL.SDL_Keycode.SDLK_UP -> ()
+                | SDL.SDL_Keycode.SDLK_LEFT -> ()
+                | SDL.SDL_Keycode.SDLK_DOWN -> ()
+                | SDL.SDL_Keycode.SDLK_RIGHT -> ()
+                | SDL.SDL_Keycode.SDLK_ESCAPE ->
+                    quitEvent <- true
+                | SDL.SDL_Keycode.SDLK_SPACE -> ()
+                | _ -> ()
+
+        | SDL.SDL_EventType.SDL_WINDOWEVENT ->
+            SDL_HandleWindowEvent event
+
         | _ -> ()
+
+        quitEvent
+
+
+    let SDL_PollEvents () =
+        let rec loop (pending, event) =
+            match SDL_HandleEvent event with
+            | quitEvent when quitEvent = true -> true
+            | quitEvent when quitEvent = false ->
+                        match (pending > 0) with
+                        | true -> SDL.SDL_PollEvent() |> loop
+                        | false -> quitEvent
+        SDL.SDL_PollEvent() |> loop
+
+
+    let rec SDL_PollControllers (controllers:list<SDLController>) =
+        match controllers with
+        | [] -> ()
+        | head :: tail ->
+            match (SDL.SDL_GameControllerGetAttached head) with
+            | SDL.SDL_bool.SDL_FALSE -> ()
+            | SDL.SDL_bool.SDL_TRUE ->
+                let Up = SDL.SDL_GameControllerGetButton( head, SDL.SDL_GameControllerButton.SDL_CONTROLLER_BUTTON_DPAD_UP )
+                let Down = SDL.SDL_GameControllerGetButton( head, SDL.SDL_GameControllerButton.SDL_CONTROLLER_BUTTON_DPAD_DOWN )
+                let Left = SDL.SDL_GameControllerGetButton( head, SDL.SDL_GameControllerButton.SDL_CONTROLLER_BUTTON_DPAD_LEFT )
+                let Right = SDL.SDL_GameControllerGetButton( head, SDL.SDL_GameControllerButton.SDL_CONTROLLER_BUTTON_DPAD_RIGHT )
+
+                let Start = SDL.SDL_GameControllerGetButton( head, SDL.SDL_GameControllerButton.SDL_CONTROLLER_BUTTON_START )
+                let Back = SDL.SDL_GameControllerGetButton( head, SDL.SDL_GameControllerButton.SDL_CONTROLLER_BUTTON_BACK )
+
+                let LeftShoulder = SDL.SDL_GameControllerGetButton( head, SDL.SDL_GameControllerButton.SDL_CONTROLLER_BUTTON_LEFTSHOULDER )
+                let RightShoulder = SDL.SDL_GameControllerGetButton( head, SDL.SDL_GameControllerButton.SDL_CONTROLLER_BUTTON_RIGHTSHOULDER )
+
+                let AButton = SDL.SDL_GameControllerGetButton( head, SDL.SDL_GameControllerButton.SDL_CONTROLLER_BUTTON_A )
+                let BButton = SDL.SDL_GameControllerGetButton( head, SDL.SDL_GameControllerButton.SDL_CONTROLLER_BUTTON_B )
+                let XButton = SDL.SDL_GameControllerGetButton( head, SDL.SDL_GameControllerButton.SDL_CONTROLLER_BUTTON_X )
+                let YButton = SDL.SDL_GameControllerGetButton( head, SDL.SDL_GameControllerButton.SDL_CONTROLLER_BUTTON_Y )
+
+                let StickX = SDL.SDL_GameControllerGetAxis( head, SDL.SDL_GameControllerAxis.SDL_CONTROLLER_AXIS_LEFTX )
+                let StickY = SDL.SDL_GameControllerGetAxis( head, SDL.SDL_GameControllerAxis.SDL_CONTROLLER_AXIS_LEFTY )
+
+                match AButton with
+                | x when x = (byte)1 -> BlueOffset <- BlueOffset + (byte)1
+                | _ -> ()
+
+            SDL_PollControllers tail
 
 
     [<EntryPoint>]
@@ -152,23 +238,24 @@ module SDL_Handmade =
 
             SDL_ResizeTexture window
 
-            ControllerHandles <- List.toArray( OpenControllers [0..SDL.SDL_NumJoysticks()-1] )
+            ControllerHandles <- List.toArray( SDL_OpenControllers [0..SDL.SDL_NumJoysticks()-1] )
 
-            let mutable sdlEvent = Unchecked.defaultof<SDL.SDL_Event>
-            let mutable counter = 0
+            let rec GameLoop () =
+                match SDL_PollEvents () with
+                | shouldQuit when shouldQuit = false ->
+                    SDL_PollControllers (Seq.toList ControllerHandles)
 
-            let rec GameLoop eventFunction =
-                if SDL.SDL_GetWindowID window = (uint32)0 || SDL.SDL_GetRenderer window = IntPtr.Zero then
-                    Debug.WriteLine( "Closing GameLoop!" )
-                else
-                    counter <- counter + 1
-                    printfn "%d" counter
-                    SDL.SDL_PollEvent( &sdlEvent ) |> ignore
-                    BlueOffset <- BlueOffset + (byte)1
                     GreenOffset <- GreenOffset + (byte)2
+
                     RenderGradient BlueOffset GreenOffset
                     SDL_UpdateWindow renderer
-                    GameLoop ( SDL_HandleEvent sdlEvent )
 
-            GameLoop ( SDL_HandleEvent sdlEvent )
-        0
+                    GameLoop ()
+
+                | shouldQuit when shouldQuit = true -> ()
+
+            GameLoop ()
+
+        SDL_CloseControllers (Seq.toList ControllerHandles)
+        SDL.SDL_Quit()
+        0 // Exit Application
