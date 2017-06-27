@@ -126,20 +126,10 @@ module SDL_Handmade =
                                                    GlobalBackBuffer.Size.Width, GlobalBackBuffer.Size.Height )
 
 
-    let SDL_HandleWindowEvent (event:SDL.SDL_Event) =
-        let window = SDL.SDL_GetWindowFromID event.window.windowID
-        match event.window.windowEvent with
-        | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_RESIZED -> SDL_ResizeTexture window
-        | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_SIZE_CHANGED -> SDL_ResizeTexture window
-        | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_EXPOSED -> SDL_UpdateWindow  window
-        | _ -> ()
-
-
     let SDL_HandleEvent (event:SDL.SDL_Event) =
         let mutable quitEvent = false
         match event.``type`` with
-        | SDL.SDL_EventType.SDL_QUIT ->
-            quitEvent <- true
+        | SDL.SDL_EventType.SDL_QUIT -> quitEvent <- true; ()
 
         | keyevent when keyevent = SDL.SDL_EventType.SDL_KEYDOWN || keyevent = SDL.SDL_EventType.SDL_KEYUP ->
             let IsDown = event.key.state = SDL.SDL_PRESSED
@@ -149,25 +139,29 @@ module SDL_Handmade =
                           | _ -> false
 
             if event.key.repeat = (byte)0 then
-                match event.key.keysym.sym with
-                | SDL.SDL_Keycode.SDLK_w ->
-                    if IsDown then printfn "IsDown"
-                    elif WasDown then printfn "WasDown"
-                | SDL.SDL_Keycode.SDLK_s -> ()
-                | SDL.SDL_Keycode.SDLK_d -> ()
-                | SDL.SDL_Keycode.SDLK_q -> ()
-                | SDL.SDL_Keycode.SDLK_e -> ()
-                | SDL.SDL_Keycode.SDLK_UP -> ()
-                | SDL.SDL_Keycode.SDLK_LEFT -> ()
-                | SDL.SDL_Keycode.SDLK_DOWN -> ()
-                | SDL.SDL_Keycode.SDLK_RIGHT -> ()
-                | SDL.SDL_Keycode.SDLK_ESCAPE ->
-                    quitEvent <- true
-                | SDL.SDL_Keycode.SDLK_SPACE -> ()
-                | _ -> ()
+               match event.key.keysym.sym with
+               | SDL.SDL_Keycode.SDLK_w ->
+                   if IsDown then printfn "IsDown"
+                   elif WasDown then printfn "WasDown"
+               | SDL.SDL_Keycode.SDLK_s -> ()
+               | SDL.SDL_Keycode.SDLK_d -> ()
+               | SDL.SDL_Keycode.SDLK_q -> ()
+               | SDL.SDL_Keycode.SDLK_e -> ()
+               | SDL.SDL_Keycode.SDLK_UP -> ()
+               | SDL.SDL_Keycode.SDLK_LEFT -> ()
+               | SDL.SDL_Keycode.SDLK_DOWN -> ()
+               | SDL.SDL_Keycode.SDLK_RIGHT -> ()
+               | SDL.SDL_Keycode.SDLK_ESCAPE -> quitEvent <- true; ()
+               | SDL.SDL_Keycode.SDLK_SPACE -> ()
+               | _ -> ()
 
         | SDL.SDL_EventType.SDL_WINDOWEVENT ->
-            SDL_HandleWindowEvent event
+            let window = SDL.SDL_GetWindowFromID event.window.windowID
+            match event.window.windowEvent with
+            | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_RESIZED -> SDL_ResizeTexture window
+            | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_SIZE_CHANGED -> SDL_ResizeTexture window
+            | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_EXPOSED -> SDL_UpdateWindow  window
+            | _ -> ()
 
         | _ -> ()
 
@@ -176,12 +170,10 @@ module SDL_Handmade =
 
     let SDL_PollEvents () =
         let rec loop (pending, event) =
-            match SDL_HandleEvent event with
-            | quitEvent when quitEvent = true -> true
-            | quitEvent when quitEvent = false ->
-                        match (pending > 0) with
-                        | true -> SDL.SDL_PollEvent() |> loop
-                        | false -> quitEvent
+            let quitEvent = SDL_HandleEvent event
+            match ( quitEvent, (pending > 0) ) with
+            | false, true -> SDL.SDL_PollEvent() |> loop
+            | _ -> quitEvent
         SDL.SDL_PollEvent() |> loop
 
 
@@ -218,12 +210,31 @@ module SDL_Handmade =
             SDL_PollControllers tail
 
 
+    let SDL_InitAudio (samplesPerSecond:int32) (bufferSize:int32) =
+        let mutable settings = SDL.SDL_AudioSpec()
+        settings.freq <- samplesPerSecond
+        settings.format <- SDL.AUDIO_S16LSB
+        settings.channels <- (byte)2
+        settings.samples <- (uint16)bufferSize
+        // callback
+
+        SDL.SDL_OpenAudio (ref settings) |> ignore
+
+        printfn "Initialized an audio device at frequency %d Hz, %d channels" settings.freq settings.channels
+
+        if settings.format <> SDL.AUDIO_S16LSB then
+            printfn "Sample format not set to AUDIO_S16LSB, closing audio device!"
+            SDL.SDL_CloseAudio()
+
+        SDL.SDL_PauseAudio 0
+
+
     [<EntryPoint>]
     let main args =
 
         SDL.SDL_SetHint( SDL.SDL_HINT_WINDOWS_DISABLE_THREAD_NAMING, "1" ) |> ignore
 
-        if SDL.SDL_Init ( SDL.SDL_INIT_VIDEO ||| SDL.SDL_INIT_GAMECONTROLLER ) <> 0 then
+        if SDL.SDL_Init ( SDL.SDL_INIT_VIDEO ||| SDL.SDL_INIT_GAMECONTROLLER ||| SDL.SDL_INIT_AUDIO ) <> 0 then
             printfn "SDL Init Error!"
         else
             printfn "SDL Init Successful"
@@ -238,11 +249,14 @@ module SDL_Handmade =
 
             SDL_ResizeTexture window
 
+            SDL_InitAudio 48000 4096
+
             ControllerHandles <- List.toArray( SDL_OpenControllers [0..SDL.SDL_NumJoysticks()-1] )
 
             let rec GameLoop () =
-                match SDL_PollEvents () with
-                | shouldQuit when shouldQuit = false ->
+                let quitEvent = SDL_PollEvents ()
+                match quitEvent with
+                | false ->
                     SDL_PollControllers (Seq.toList ControllerHandles)
 
                     GreenOffset <- GreenOffset + (byte)2
@@ -252,7 +266,7 @@ module SDL_Handmade =
 
                     GameLoop ()
 
-                | shouldQuit when shouldQuit = true -> ()
+                | true -> ()
 
             GameLoop ()
 
