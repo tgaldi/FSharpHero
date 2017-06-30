@@ -8,21 +8,21 @@ module SDL_Handmade =
     open Microsoft.FSharp.NativeInterop
     open SDL2
 
-    type SDLWindow = nativeint
-    type SDLRenderer = nativeint
-    type SDLTexture = nativeint
-    type SDLController = nativeint
-    type SDLEvent = SDL.SDL_Event
-
-    type SDL_WindowSize = { Width : int; Height : int }
-
+    // #NOTE this probably doesn't work
     type Ptr = { Handle : GCHandle; Address : nativeint }
     let GetPtr value =
         let handle = GCHandle.Alloc( value, GCHandleType.Pinned )
         let address = handle.AddrOfPinnedObject()
         { Handle = handle; Address = address }
 
+    type SDLWindow = nativeint
+    type SDLRenderer = nativeint
+    type SDLTexture = nativeint
+    type SDLController = nativeint
+    type SDLEvent = SDL.SDL_Event
 
+
+    type SDL_WindowSize = { Width : int; Height : int }
     type SDL_Offscreen_Buffer =
         {
             mutable Texture : SDLTexture;
@@ -30,7 +30,6 @@ module SDL_Handmade =
             mutable Pixels : byte[]
             BytesPerPixel : int
         }
-
     let GlobalBackBuffer =
         {
             Texture = Unchecked.defaultof<SDLTexture>
@@ -38,18 +37,71 @@ module SDL_Handmade =
             Pixels = Array.zeroCreate<byte> 0
             BytesPerPixel = 4
         }
-
     let SDL_GetWindowSize (window:SDLWindow) =
-        // #NOTE GetWindowSize takes a window and two byRef/"out" int results.
+        // #NOTE GetWindowSize takes a window and two byRef or "out" int results.
         // F# automatically turns out parameters into tuples instead of the user providing a data container.
         // The matching on ( width, height ) is matching the returned tuple.
         match SDL.SDL_GetWindowSize( window ) with
         | ( width, height ) -> { Width = width; Height = height }
 
 
-    let MAX_CONTROLLERS = 4
-    let mutable ControllerHandles = Array.zeroCreate<SDLController> 0
+    type SDL_Audio_Ring_Buffer =
+        {
+            mutable Size : int
+            mutable WriteCursor : int
+            mutable PlayCursor : int
+            mutable Data : byte[]
+            mutable Callback : SDL.SDL_AudioCallback
+        }
+    let AudioRingBuffer =
+        {
+            Size = 0
+            WriteCursor = 0
+            PlayCursor = 0
+            Data = Array.zeroCreate<byte> 0
+            Callback = Unchecked.defaultof<SDL.SDL_AudioCallback>
+        }
 
+    let SDL_AudioCallback (userdata:nativeint) (audiodata:nativeint) (length:int) =
+        // #NOTE Use tuples to return values of a condition rather than mutables
+        let region1Size, region2Size =
+            if( AudioRingBuffer.PlayCursor + length > AudioRingBuffer.Size ) then
+                let r1 = AudioRingBuffer.Size - AudioRingBuffer.PlayCursor
+                r1, length - r1
+            else
+                length, 0
+
+        // #NOTE Slice ringbuffer regions into one sample array
+        let samples = Array.concat [ AudioRingBuffer.Data.[AudioRingBuffer.PlayCursor..region1Size-1] ; AudioRingBuffer.Data.[0..region2Size-1] ]
+        Marshal.Copy( samples, 0, audiodata, samples.Length  )
+        AudioRingBuffer.PlayCursor <- (AudioRingBuffer.PlayCursor + length) % AudioRingBuffer.Size
+        AudioRingBuffer.WriteCursor <- (AudioRingBuffer.PlayCursor + 2048) % AudioRingBuffer.Size
+
+    let SDL_InitAudio samplesPerSecond bufferSize =
+
+        AudioRingBuffer.Size <- bufferSize
+        AudioRingBuffer.Data <- Array.zeroCreate<byte> bufferSize
+        AudioRingBuffer.Callback <- new SDL.SDL_AudioCallback( SDL_AudioCallback )
+
+        let mutable settings = SDL.SDL_AudioSpec()
+        settings.freq <- samplesPerSecond
+        settings.format <- SDL.AUDIO_S16LSB
+        settings.channels <- (byte)2
+        settings.samples <- (uint16)1024
+        settings.callback <- AudioRingBuffer.Callback
+
+        SDL.SDL_OpenAudio (ref settings) |> ignore
+
+        printfn "Initialized an audio device at frequency %d Hz, %d channels" settings.freq settings.channels
+
+        if settings.format <> SDL.AUDIO_S16LSB then
+            printfn "Sample format not set to AUDIO_S16LSB, closing audio device!"
+            SDL.SDL_CloseAudio()
+
+        SDL.SDL_PauseAudio 0
+
+
+    let MAX_CONTROLLERS = 4
     let SDL_OpenControllers count =
         // #NOTE This is the cons (construct) pattern used to deconstruct a list.
         // The first element of the list, the head, is popped off and the tail contains the remaining list.
@@ -169,9 +221,9 @@ module SDL_Handmade =
 
 
     let SDL_PollEvents () =
-        let rec loop (pending, event) =
+        let rec loop (pendingCount, event) =
             let quitEvent = SDL_HandleEvent event
-            match ( quitEvent, (pending > 0) ) with
+            match ( quitEvent, (pendingCount > 0) ) with
             | false, true -> SDL.SDL_PollEvent() |> loop
             | _ -> quitEvent
         SDL.SDL_PollEvent() |> loop
@@ -210,23 +262,7 @@ module SDL_Handmade =
             SDL_PollControllers tail
 
 
-    let SDL_InitAudio (samplesPerSecond:int32) (bufferSize:int32) =
-        let mutable settings = SDL.SDL_AudioSpec()
-        settings.freq <- samplesPerSecond
-        settings.format <- SDL.AUDIO_S16LSB
-        settings.channels <- (byte)2
-        settings.samples <- (uint16)bufferSize
-        // callback
 
-        SDL.SDL_OpenAudio (ref settings) |> ignore
-
-        printfn "Initialized an audio device at frequency %d Hz, %d channels" settings.freq settings.channels
-
-        if settings.format <> SDL.AUDIO_S16LSB then
-            printfn "Sample format not set to AUDIO_S16LSB, closing audio device!"
-            SDL.SDL_CloseAudio()
-
-        SDL.SDL_PauseAudio 0
 
 
     [<EntryPoint>]
@@ -249,27 +285,58 @@ module SDL_Handmade =
 
             SDL_ResizeTexture window
 
-            SDL_InitAudio 48000 4096
+            let ControllerHandles = SDL_OpenControllers [0..SDL.SDL_NumJoysticks()-1]
 
-            ControllerHandles <- List.toArray( SDL_OpenControllers [0..SDL.SDL_NumJoysticks()-1] )
+            let SamplesPerSecond = 48000
+            let ToneHz = 256
+            let ToneVolume = (int16)3000
+            let RunningSampleIndex = 0
+            let SquareWavePeriod = SamplesPerSecond / ToneHz
+            let HalfSquareWavePeriod = SquareWavePeriod / 2
+            let BytesPerSample = sizeof<uint16> * 2
+            let AudioBufferSize = SamplesPerSecond * BytesPerSample
+
+            SDL_InitAudio SamplesPerSecond AudioBufferSize
+            let mutable SoundIsPlaying = false
 
             let rec GameLoop () =
                 let quitEvent = SDL_PollEvents ()
                 match quitEvent with
                 | false ->
-                    SDL_PollControllers (Seq.toList ControllerHandles)
+                    SDL_PollControllers ControllerHandles
+
+                    RenderGradient BlueOffset GreenOffset
+
+                    SDL.SDL_LockAudio()
+                    let byteToLock = RunningSampleIndex * BytesPerSample % AudioBufferSize
+                    let byteToWrite =
+                        match byteToLock with
+                        | index when index = AudioRingBuffer.PlayCursor -> AudioBufferSize
+                        | index when index > AudioRingBuffer.PlayCursor -> (AudioBufferSize - byteToLock) + AudioRingBuffer.PlayCursor
+                        | _ -> AudioRingBuffer.PlayCursor - byteToLock
+
+                    // #TODO need to use Marshaling
+                    let region1 = AudioRingBuffer.Data.[byteToLock..AudioRingBuffer.Data.Length-1]
+                    let region1Size =
+                        if byteToWrite + byteToLock > AudioBufferSize then AudioBufferSize - byteToLock
+                        else byteToWrite
+
+                    let region2 = AudioRingBuffer.Data
+                    let region2SIze = byteToWrite - region1Size
+                    SDL.SDL_UnlockAudio()
+
+                    let region1SampleCount = region1Size / BytesPerSample
+
+
+                    SDL_UpdateWindow renderer
 
                     GreenOffset <- GreenOffset + (byte)2
 
-                    RenderGradient BlueOffset GreenOffset
-                    SDL_UpdateWindow renderer
-
                     GameLoop ()
-
                 | true -> ()
 
             GameLoop ()
 
-        SDL_CloseControllers (Seq.toList ControllerHandles)
-        SDL.SDL_Quit()
+            SDL_CloseControllers ControllerHandles
+            SDL.SDL_Quit()
         0 // Exit Application
