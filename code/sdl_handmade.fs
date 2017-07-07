@@ -15,6 +15,20 @@ module SDL_Handmade =
         let address = handle.AddrOfPinnedObject()
         { Handle = handle; Address = address }
 
+    type System.ArraySegment<'T> with
+        member this.Item(x) =
+            if x < 0 || x >= this.Count then
+                raise (System.IndexOutOfRangeException("Index was outside the bounds of the array segment."))
+            this.Array.[x + this.Offset]
+
+        member this.GetSlice(start: int option, finish : int option) =
+            let start = defaultArg start 0
+            let finish = defaultArg finish (this.Count - 1)
+            if start < 0 || finish >= this.Count then
+                raise (System.IndexOutOfRangeException("Index was outside the bounds of the array segment."))
+            new ArraySegment<'T>(this.Array, this.Offset + start, finish - start + 1)
+
+
     type SDLWindow = nativeint
     type SDLRenderer = nativeint
     type SDLTexture = nativeint
@@ -71,9 +85,10 @@ module SDL_Handmade =
             else
                 length, 0
 
-        // #NOTE Slice ringbuffer regions into one sample array
-        let samples = Array.concat [ AudioRingBuffer.Data.[AudioRingBuffer.PlayCursor..region1Size-1] ; AudioRingBuffer.Data.[0..region2Size-1] ]
-        Marshal.Copy( samples, 0, audiodata, samples.Length  )
+        Marshal.Copy( AudioRingBuffer.Data, AudioRingBuffer.PlayCursor, audiodata, region1Size )
+        let offsetPtr = NativePtr.add (NativePtr.ofNativeInt<byte> audiodata) region1Size
+        Marshal.Copy( AudioRingBuffer.Data, 0, NativePtr.toNativeInt offsetPtr, region2Size )
+
         AudioRingBuffer.PlayCursor <- (AudioRingBuffer.PlayCursor + length) % AudioRingBuffer.Size
         AudioRingBuffer.WriteCursor <- (AudioRingBuffer.PlayCursor + 2048) % AudioRingBuffer.Size
 
@@ -290,22 +305,20 @@ module SDL_Handmade =
             let SamplesPerSecond = 48000
             let ToneHz = 256
             let ToneVolume = (int16)3000
-            let RunningSampleIndex = 0
             let SquareWavePeriod = SamplesPerSecond / ToneHz
             let HalfSquareWavePeriod = SquareWavePeriod / 2
-            let BytesPerSample = sizeof<uint16> * 2
+            let BytesPerSample = sizeof<int16> * 2
             let AudioBufferSize = SamplesPerSecond * BytesPerSample
 
             SDL_InitAudio SamplesPerSecond AudioBufferSize
             let mutable SoundIsPlaying = false
+            let mutable RunningSampleIndex = 0
 
             let rec GameLoop () =
                 let quitEvent = SDL_PollEvents ()
                 match quitEvent with
                 | false ->
                     SDL_PollControllers ControllerHandles
-
-                    RenderGradient BlueOffset GreenOffset
 
                     SDL.SDL_LockAudio()
                     let byteToLock = RunningSampleIndex * BytesPerSample % AudioBufferSize
@@ -315,19 +328,44 @@ module SDL_Handmade =
                         | index when index > AudioRingBuffer.PlayCursor -> (AudioBufferSize - byteToLock) + AudioRingBuffer.PlayCursor
                         | _ -> AudioRingBuffer.PlayCursor - byteToLock
 
-                    // #TODO need to use Marshaling
-                    let region1 = AudioRingBuffer.Data.[byteToLock..AudioRingBuffer.Data.Length-1]
                     let region1Size =
-                        if byteToWrite + byteToLock > AudioBufferSize then AudioBufferSize - byteToLock
-                        else byteToWrite
+                        match (byteToWrite + byteToLock > AudioBufferSize) with
+                        | true -> AudioBufferSize - byteToLock
+                        | false -> byteToWrite
 
-                    let region2 = AudioRingBuffer.Data
-                    let region2SIze = byteToWrite - region1Size
+                    let region2Size = byteToWrite - region1Size
+
+                    let sampleOut = GCHandle.Alloc( AudioRingBuffer.Data, GCHandleType.Pinned )
+                    let mutable ptr = NativePtr.ofNativeInt<int16>( sampleOut.AddrOfPinnedObject() )
                     SDL.SDL_UnlockAudio()
 
                     let region1SampleCount = region1Size / BytesPerSample
+                    ptr <-NativePtr.add ptr (byteToLock / 2)
+                    for x in [0..region1SampleCount-1] do
+                        let sampleValue = if ( (RunningSampleIndex / HalfSquareWavePeriod) % 2 ) <> 0 then ToneVolume else -ToneVolume
+                        NativePtr.write ptr sampleValue
+                        ptr <- NativePtr.add ptr 1
+                        NativePtr.write ptr sampleValue
+                        ptr <- NativePtr.add ptr 1
+                        RunningSampleIndex <- RunningSampleIndex + 1
+
+                    let region2SampleCount = region2Size / BytesPerSample
+                    ptr <- NativePtr.ofNativeInt<int16>( sampleOut.AddrOfPinnedObject() )
+                    for x in [0..region2SampleCount-1] do
+                        let sampleValue = if ( (RunningSampleIndex / HalfSquareWavePeriod) % 2 ) <> 0 then ToneVolume else -ToneVolume
+                        NativePtr.write ptr sampleValue
+                        ptr <- NativePtr.add ptr 1
+                        NativePtr.write ptr sampleValue
+                        ptr <- NativePtr.add ptr 1
+                        RunningSampleIndex <- RunningSampleIndex + 1
+                    sampleOut.Free()
+
+                    if SoundIsPlaying = false then
+                        SDL.SDL_PauseAudio(0)
+                        SoundIsPlaying <- true
 
 
+                    RenderGradient BlueOffset GreenOffset
                     SDL_UpdateWindow renderer
 
                     GreenOffset <- GreenOffset + (byte)2
