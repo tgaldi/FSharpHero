@@ -85,15 +85,14 @@ module SDL_Handmade =
             else
                 length, 0
 
-        Marshal.Copy( AudioRingBuffer.Data, AudioRingBuffer.PlayCursor, audiodata, region1Size )
         let offsetPtr = NativePtr.add (NativePtr.ofNativeInt<byte> audiodata) region1Size
+        Marshal.Copy( AudioRingBuffer.Data, AudioRingBuffer.PlayCursor, audiodata, region1Size )
         Marshal.Copy( AudioRingBuffer.Data, 0, NativePtr.toNativeInt offsetPtr, region2Size )
 
         AudioRingBuffer.PlayCursor <- (AudioRingBuffer.PlayCursor + length) % AudioRingBuffer.Size
         AudioRingBuffer.WriteCursor <- (AudioRingBuffer.PlayCursor + 2048) % AudioRingBuffer.Size
 
     let SDL_InitAudio samplesPerSecond bufferSize =
-
         AudioRingBuffer.Size <- bufferSize
         AudioRingBuffer.Data <- Array.zeroCreate<byte> bufferSize
         AudioRingBuffer.Callback <- new SDL.SDL_AudioCallback( SDL_AudioCallback )
