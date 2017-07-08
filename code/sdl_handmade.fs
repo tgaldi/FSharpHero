@@ -36,6 +36,7 @@ module SDL_Handmade =
     type SDLEvent = SDL.SDL_Event
 
 
+
     type SDL_WindowSize = { Width : int; Height : int }
     type SDL_Offscreen_Buffer =
         {
