@@ -1,12 +1,14 @@
 ﻿namespace FSharpHero
 
 module SDL_Handmade =
-
     open System
     open System.Diagnostics
     open System.Runtime.InteropServices
     open Microsoft.FSharp.NativeInterop
+
     open SDL2
+
+    open Handmade
 
     // #NOTE this probably doesn't work
     type Ptr = { Handle : GCHandle; Address : nativeint }
@@ -44,7 +46,9 @@ module SDL_Handmade =
             mutable Size : SDL_WindowSize;
             mutable Pixels : int32[]
             BytesPerPixel : int32
-        }
+        } with
+            member this.PixelHandle = GCHandle.Alloc( this.Pixels, GCHandleType.Pinned )
+            member this.PixelPtr = this.PixelHandle.AddrOfPinnedObject()
     let GlobalBackBuffer =
         {
             Texture = Unchecked.defaultof<SDLTexture>
@@ -52,6 +56,7 @@ module SDL_Handmade =
             Pixels = Array.zeroCreate<int32> 0
             BytesPerPixel = 4
         }
+
     let SDL_GetWindowSize (window:SDLWindow) =
         // #NOTE GetWindowSize takes a window and two byRef or "out" int results.
         // F# automatically turns out parameters into tuples instead of the user providing a data container.
@@ -174,37 +179,32 @@ module SDL_Handmade =
         let h = buffer.Size.Height
 
         let rec colLoop row col =
-            if col = w then () else
+            if col <> w then
                 let b = (col + blueOffset) % 256
                 let g = (row + greenOffset) % 256
                 buffer.Pixels.[(row*w)+col] <- int32(g <<< 8 ||| b)
                 colLoop row (col+1)
 
         let rec rowLoop row =
-            if row = h then () else
+            if row <> h then
                 colLoop row 0
                 rowLoop (row+1)
 
         rowLoop 0
 
 
-    let SDL_UpdateWindow (renderer:SDLRenderer) (buffer:SDL_Offscreen_Buffer)=
-        let pixelHandle = GCHandle.Alloc( buffer.Pixels, GCHandleType.Pinned )
-        let pixelPtr = pixelHandle.AddrOfPinnedObject()
-
-        SDL.SDL_UpdateTexture( buffer.Texture,
+    let SDL_UpdateWindow (renderer:SDLRenderer) =
+        SDL.SDL_UpdateTexture( GlobalBackBuffer.Texture,
                                IntPtr.Zero,
-                               pixelPtr,
-                               buffer.Size.Width * buffer.BytesPerPixel ) |> ignore
+                               GlobalBackBuffer.PixelPtr,
+                               GlobalBackBuffer.Size.Width * GlobalBackBuffer.BytesPerPixel ) |> ignore
 
         SDL.SDL_RenderCopy( renderer,
-                            buffer.Texture,
+                            GlobalBackBuffer.Texture,
                             IntPtr.Zero,
                             IntPtr.Zero ) |> ignore
 
         SDL.SDL_RenderPresent renderer |> ignore
-
-        pixelHandle.Free()
 
 
     let SDL_ResizeTexture (window:SDLWindow) =
@@ -255,7 +255,7 @@ module SDL_Handmade =
             match event.window.windowEvent with
             | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_RESIZED -> SDL_ResizeTexture window
             | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_SIZE_CHANGED -> SDL_ResizeTexture window
-            | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_EXPOSED -> SDL_UpdateWindow window GlobalBackBuffer
+            | SDL.SDL_WindowEventID.SDL_WINDOWEVENT_EXPOSED -> SDL_UpdateWindow window
             | _ -> ()
 
         | _ -> ()
@@ -393,6 +393,15 @@ module SDL_Handmade =
                 | false ->
                     SDL_PollControllers ControllerHandles
 
+                    let buffer =
+                        {
+                            Pixels = GlobalBackBuffer.Pixels
+                            Width = GlobalBackBuffer.Size.Width
+                            Height = GlobalBackBuffer.Size.Height
+                            BytesPerPixel = GlobalBackBuffer.BytesPerPixel
+                        }
+                    GameUpdateAndRender buffer BlueOffset GreenOffset
+
                     SDL.SDL_LockAudio()
                     let byteToLock = (AudioOutput.RunningSampleIndex * AudioOutput.BytesPerSample) % AudioOutput.AudioBufferSize
                     let TargetCursor = (AudioRingBuffer.PlayCursor +
@@ -406,9 +415,7 @@ module SDL_Handmade =
 
                     SDL_FillSoundBuffer byteToLock byteToWrite
 
-                    RenderGradient GlobalBackBuffer BlueOffset GreenOffset
-
-                    SDL_UpdateWindow renderer GlobalBackBuffer
+                    SDL_UpdateWindow renderer
 
                     GreenOffset <- GreenOffset + 2
 
@@ -426,5 +433,6 @@ module SDL_Handmade =
 
             SDL_CloseControllers ControllerHandles
 
+            GlobalBackBuffer.PixelHandle.Free()
             SDL.SDL_Quit()
         0 // Exit Application
