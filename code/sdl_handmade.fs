@@ -17,6 +17,7 @@ module SDL_Handmade =
         let address = handle.AddrOfPinnedObject()
         { Handle = handle; Address = address }
 
+
     type System.ArraySegment<'T> with
         member this.Item(x) =
             if x < 0 || x >= this.Count then
@@ -75,9 +76,9 @@ module SDL_Handmade =
             mutable tSine : float
         } with
             member this.WavePeriod = this.SamplesPerSecond / this.ToneHz
-            member this.AudioBufferSize = this.BytesPerSample * this.SamplesPerSecond
+            member this.SoundBufferSize = this.BytesPerSample * this.SamplesPerSecond
             member this.LatencySampleCount = this.SamplesPerSecond / 15
-    let AudioOutput =
+    let SoundOutput =
         {
             SamplesPerSecond = 48000
             ToneHz = 256
@@ -174,24 +175,6 @@ module SDL_Handmade =
 
     let mutable BlueOffset = 0
     let mutable GreenOffset = 0
-    let RenderGradient (buffer:SDL_Offscreen_Buffer) (blueOffset:int32) (greenOffset:int32) =
-        let w = buffer.Size.Width
-        let h = buffer.Size.Height
-
-        let rec colLoop row col =
-            if col <> w then
-                let b = (col + blueOffset) % 256
-                let g = (row + greenOffset) % 256
-                buffer.Pixels.[(row*w)+col] <- int32(g <<< 8 ||| b)
-                colLoop row (col+1)
-
-        let rec rowLoop row =
-            if row <> h then
-                colLoop row 0
-                rowLoop (row+1)
-
-        rowLoop 0
-
 
     let SDL_UpdateWindow (renderer:SDLRenderer) =
         SDL.SDL_UpdateTexture( GlobalBackBuffer.Texture,
@@ -304,53 +287,48 @@ module SDL_Handmade =
 
                 GreenOffset <- GreenOffset + (int32)(StickY >>> 12)
 
-//                AudioOutput.ToneHz <- 512 + (int)(256.0f*((float32)StickX / 30000.0f))
-
-
             SDL_PollControllers tail
 
 
-
-    let SDL_FillSoundBuffer byteToLock byteToWrite =
+    let  SDL_FillSoundBuffer (audioOutput:SDL_Audio_Output) byteToLock byteToWrite (gameSoundBuffer:game_sound_output_buffer)=
         let region1Size =
-            match (byteToWrite + byteToLock > AudioOutput.AudioBufferSize) with
-            | true -> AudioOutput.AudioBufferSize - byteToLock
-            | false -> byteToWrite
-
+            if ( (byteToWrite+byteToLock) > audioOutput.SoundBufferSize) then
+                SoundOutput.SoundBufferSize - byteToLock
+            else
+                byteToWrite
         let region2Size = byteToWrite - region1Size
 
+        let region1SampleCount = region1Size / audioOutput.BytesPerSample
+        let region2SampleCount = region2Size / audioOutput.BytesPerSample
+
+        // #Note Region 1 starts at the byteToLock index within the AudioRingBuffer
         let sampleOut = GCHandle.Alloc( AudioRingBuffer.Data, GCHandleType.Pinned )
-        let mutable ptr = NativePtr.ofNativeInt<int16>( sampleOut.AddrOfPinnedObject() )
+        let mutable sampleOutPtr = NativePtr.ofNativeInt<int16>( sampleOut.AddrOfPinnedObject() )
+        sampleOutPtr <-NativePtr.add sampleOutPtr byteToLock
 
-        let region1SampleCount = region1Size / AudioOutput.BytesPerSample
-        ptr <-NativePtr.add ptr (byteToLock / 2)
+        let samples = GCHandle.Alloc( gameSoundBuffer.Data, GCHandleType.Pinned )
+        let mutable samplesPtr = NativePtr.ofNativeInt<int16>( samples.AddrOfPinnedObject() )
 
-        // #TODO replace for loops with recursion
-        for x in [0..region1SampleCount-1] do
-//            AudioOutput.tSine <- ((Math.PI * 2.0) * (float)AudioOutput.RunningSampleIndex) / (float)AudioOutput.WavePeriod
-            let t = ((Math.PI * 2.0) * (float)AudioOutput.RunningSampleIndex) / (float)AudioOutput.WavePeriod
-            let sineValue = Math.Sin( t )
-            let sampleValue = (int16)( sineValue * (float)AudioOutput.ToneVolume )
-            NativePtr.write ptr sampleValue
-            ptr <- NativePtr.add ptr 1
-            NativePtr.write ptr sampleValue
-            ptr <- NativePtr.add ptr 1
-            AudioOutput.RunningSampleIndex <- AudioOutput.RunningSampleIndex + 1
+        let rec fillRegion1 sampleIndex =
+            if sampleIndex < region1SampleCount then
+                NativePtr.write sampleOutPtr (NativePtr.read samplesPtr)
+                sampleOutPtr <- NativePtr.add sampleOutPtr 1
+                samplesPtr <- NativePtr.add samplesPtr 1
+                fillRegion1 (sampleIndex+1)
+        fillRegion1 0
 
-        let region2SampleCount = region2Size / AudioOutput.BytesPerSample
-        ptr <- NativePtr.ofNativeInt<int16>( sampleOut.AddrOfPinnedObject() )
-        for x in [0..region2SampleCount-1] do
-//            AudioOutput.tSine <- ((Math.PI * 2.0) * (float)AudioOutput.RunningSampleIndex) / (float)AudioOutput.WavePeriod
-            let t = ((Math.PI * 2.0) * (float)AudioOutput.RunningSampleIndex) / (float)AudioOutput.WavePeriod
-            let sineValue = Math.Sin( t )
-            let sampleValue = (int16)( sineValue * (float)AudioOutput.ToneVolume )
-            NativePtr.write ptr sampleValue
-            ptr <- NativePtr.add ptr 1
-            NativePtr.write ptr sampleValue
-            ptr <- NativePtr.add ptr 1
-            AudioOutput.RunningSampleIndex <- AudioOutput.RunningSampleIndex + 1
+        // #NOTE Region 2 starts from the beginning of the AudioRingBuffer
+        sampleOutPtr <- NativePtr.ofNativeInt<int16>( sampleOut.AddrOfPinnedObject() )
+        let rec fillRegion2 sampleIndex =
+            if sampleIndex < region2SampleCount then
+                NativePtr.write sampleOutPtr (NativePtr.read samplesPtr)
+                sampleOutPtr <- NativePtr.add sampleOutPtr 1
+                samplesPtr <- NativePtr.add samplesPtr 1
+                fillRegion2 (sampleIndex+1)
+        fillRegion2 0
 
         sampleOut.Free()
+        samples.Free()
 
 
     [<EntryPoint>]
@@ -362,8 +340,6 @@ module SDL_Handmade =
             printfn "SDL Init Error!"
         else
             printfn "SDL Init Successful"
-
-            let PerfCountFrequency = SDL.SDL_GetPerformanceFrequency()
 
             let window =
                 SDL.SDL_CreateWindow( "FSharp Hero",
@@ -377,10 +353,11 @@ module SDL_Handmade =
 
             let ControllerHandles = SDL_OpenControllers [0..SDL.SDL_NumJoysticks()-1]
 
-            SDL_InitAudio AudioOutput.SamplesPerSecond AudioOutput.AudioBufferSize
-            SDL_FillSoundBuffer 0 (AudioOutput.LatencySampleCount*AudioOutput.BytesPerSample)
+            SDL_InitAudio SoundOutput.SamplesPerSecond SoundOutput.SoundBufferSize
+            let GameAudioSamples = Array.zeroCreate<byte> SoundOutput.SoundBufferSize
             SDL.SDL_PauseAudio(0)
 
+            let PerfCountFrequency = SDL.SDL_GetPerformanceFrequency()
             let stopwatch = Stopwatch()
             stopwatch.Start()
 
@@ -393,27 +370,33 @@ module SDL_Handmade =
                 | false ->
                     SDL_PollControllers ControllerHandles
 
-                    let buffer =
+                    SDL.SDL_LockAudio()
+                    let byteToLock = (SoundOutput.RunningSampleIndex * SoundOutput.BytesPerSample) % SoundOutput.SoundBufferSize
+                    let TargetCursor = (AudioRingBuffer.PlayCursor +
+                                        (SoundOutput.LatencySampleCount*SoundOutput.BytesPerSample)) % SoundOutput.SoundBufferSize
+                    let byteToWrite =
+                        if byteToLock > TargetCursor then
+                            (SoundOutput.SoundBufferSize - byteToLock) + TargetCursor
+                        else
+                            AudioRingBuffer.PlayCursor - byteToLock
+                    SDL.SDL_UnlockAudio()
+
+                    let soundBuffer =
+                        {
+                            SamplesPerSecond = SoundOutput.SamplesPerSecond
+                            SampleCount = byteToWrite / SoundOutput.BytesPerSample
+                            Data = GameAudioSamples
+                        }
+                    let renderBuffer =
                         {
                             Pixels = GlobalBackBuffer.Pixels
                             Width = GlobalBackBuffer.Size.Width
                             Height = GlobalBackBuffer.Size.Height
                             BytesPerPixel = GlobalBackBuffer.BytesPerPixel
                         }
-                    GameUpdateAndRender buffer BlueOffset GreenOffset
+                    GameUpdateAndRender renderBuffer BlueOffset GreenOffset soundBuffer
 
-                    SDL.SDL_LockAudio()
-                    let byteToLock = (AudioOutput.RunningSampleIndex * AudioOutput.BytesPerSample) % AudioOutput.AudioBufferSize
-                    let TargetCursor = (AudioRingBuffer.PlayCursor +
-                                        (AudioOutput.LatencySampleCount*AudioOutput.BytesPerSample)) % AudioOutput.AudioBufferSize
-                    let byteToWrite =
-                        if byteToLock > TargetCursor then
-                            (AudioOutput.AudioBufferSize - byteToLock) + TargetCursor
-                        else
-                            AudioRingBuffer.PlayCursor - byteToLock
-                    SDL.SDL_UnlockAudio()
-
-                    SDL_FillSoundBuffer byteToLock byteToWrite
+                    SDL_FillSoundBuffer SoundOutput byteToLock byteToWrite soundBuffer
 
                     SDL_UpdateWindow renderer
 
@@ -432,7 +415,7 @@ module SDL_Handmade =
             GameLoop ()
 
             SDL_CloseControllers ControllerHandles
+            SDL.SDL_Quit()
 
             GlobalBackBuffer.PixelHandle.Free()
-            SDL.SDL_Quit()
         0 // Exit Application
