@@ -116,7 +116,8 @@ module SDL_Handmade =
 
         let offsetPtr = NativePtr.add (NativePtr.ofNativeInt<byte> audiodata) region1Size
         Marshal.Copy( AudioRingBuffer.Data, AudioRingBuffer.PlayCursor, audiodata, region1Size )
-        Marshal.Copy( AudioRingBuffer.Data, 0, NativePtr.toNativeInt offsetPtr, region2Size )
+        if region2Size > 0 then
+            Marshal.Copy( AudioRingBuffer.Data, 0, NativePtr.toNativeInt offsetPtr, region2Size )
 
         AudioRingBuffer.PlayCursor <- (AudioRingBuffer.PlayCursor + length) % AudioRingBuffer.Size
         AudioRingBuffer.WriteCursor <- (AudioRingBuffer.PlayCursor + 2048) % AudioRingBuffer.Size
@@ -301,34 +302,17 @@ module SDL_Handmade =
         let region1SampleCount = region1Size / audioOutput.BytesPerSample
         let region2SampleCount = region2Size / audioOutput.BytesPerSample
 
-        // #Note Region 1 starts at the byteToLock index within the AudioRingBuffer
         let sampleOut = GCHandle.Alloc( AudioRingBuffer.Data, GCHandleType.Pinned )
-        let mutable sampleOutPtr = NativePtr.ofNativeInt<int16>( sampleOut.AddrOfPinnedObject() )
-        sampleOutPtr <-NativePtr.add sampleOutPtr byteToLock
+        let sampleOutPtr = NativePtr.ofNativeInt<int16>( sampleOut.AddrOfPinnedObject() )
 
-        let samples = GCHandle.Alloc( gameSoundBuffer.Data, GCHandleType.Pinned )
-        let mutable samplesPtr = NativePtr.ofNativeInt<int16>( samples.AddrOfPinnedObject() )
+        // #Note region 1 starts at the byteToLock offset
+        let region1Ptr = NativePtr.add sampleOutPtr byteToLock
 
-        let rec fillRegion1 sampleIndex =
-            if sampleIndex < region1SampleCount then
-                NativePtr.write sampleOutPtr (NativePtr.read samplesPtr)
-                sampleOutPtr <- NativePtr.add sampleOutPtr 1
-                samplesPtr <- NativePtr.add samplesPtr 1
-                fillRegion1 (sampleIndex+1)
-        fillRegion1 0
-
-        // #NOTE Region 2 starts from the beginning of the AudioRingBuffer
-        sampleOutPtr <- NativePtr.ofNativeInt<int16>( sampleOut.AddrOfPinnedObject() )
-        let rec fillRegion2 sampleIndex =
-            if sampleIndex < region2SampleCount then
-                NativePtr.write sampleOutPtr (NativePtr.read samplesPtr)
-                sampleOutPtr <- NativePtr.add sampleOutPtr 1
-                samplesPtr <- NativePtr.add samplesPtr 1
-                fillRegion2 (sampleIndex+1)
-        fillRegion2 0
+        Marshal.Copy( gameSoundBuffer.Samples, 0, NativePtr.toNativeInt region1Ptr, region1SampleCount )
+        if region2SampleCount > 0 then
+            Marshal.Copy( gameSoundBuffer.Samples, region1SampleCount, sampleOut.AddrOfPinnedObject(), region2SampleCount )
 
         sampleOut.Free()
-        samples.Free()
 
 
     [<EntryPoint>]
@@ -354,7 +338,7 @@ module SDL_Handmade =
             let ControllerHandles = SDL_OpenControllers [0..SDL.SDL_NumJoysticks()-1]
 
             SDL_InitAudio SoundOutput.SamplesPerSecond SoundOutput.SoundBufferSize
-            let GameAudioSamples = Array.zeroCreate<byte> SoundOutput.SoundBufferSize
+            let GameAudioSamples = Array.zeroCreate<int16> SoundOutput.SoundBufferSize
             SDL.SDL_PauseAudio(0)
 
             let PerfCountFrequency = SDL.SDL_GetPerformanceFrequency()
@@ -385,7 +369,7 @@ module SDL_Handmade =
                         {
                             SamplesPerSecond = SoundOutput.SamplesPerSecond
                             SampleCount = byteToWrite / SoundOutput.BytesPerSample
-                            Data = GameAudioSamples
+                            Samples = GameAudioSamples
                         }
                     let renderBuffer =
                         {

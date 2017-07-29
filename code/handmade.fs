@@ -7,7 +7,7 @@ module Handmade =
 
     type game_offscreen_buffer =
         {
-            mutable Pixels : int32[]
+            Pixels : int32[]
             Width : int32
             Height : int32
             BytesPerPixel : int32
@@ -17,20 +17,22 @@ module Handmade =
         {
             SamplesPerSecond : int
             SampleCount : int
-            Data : byte[]
+            Samples : int16[]
         }
 
     let private toneVolume = 3000
     let private toneHz = 256
     let mutable private tSine = 0.0f
+
     let private GameOutputSound (soundBuffer:game_sound_output_buffer) =
         let wavePeriod = soundBuffer.SamplesPerSecond / toneHz
-
-        let sampleOut = GCHandle.Alloc( soundBuffer.Data, GCHandleType.Pinned )
+        let sampleCount = soundBuffer.SampleCount
+        let sampleOut = GCHandle.Alloc( soundBuffer.Samples, GCHandleType.Pinned )
         let mutable sampleOutPtr = NativePtr.ofNativeInt<int16>( sampleOut.AddrOfPinnedObject() )
 
+        // #Note Filling directly by hand is faster than creating an array of samples and Marshal.Copy'ing it to the buffer
         let rec fillBuffer sampleIndex =
-            if sampleIndex < soundBuffer.SampleCount then
+            if sampleIndex < sampleCount then
                 let sineValue = sin( tSine )
                 let sampleValue = (int16)( sineValue * (float32)toneVolume )
 
